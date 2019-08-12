@@ -5,7 +5,7 @@ Creates a stack that will handle leads from dynamo db, sends it on sqs via lambd
 **The cloudformation template/stack is caseStudy.yaml**
 
 
-The folder case-study-via-sceptre is also and option and it contains the cloudformation stack inside as a template and can be used to provision cfn stacks.
+The folder case-study-via-sceptre is also an option and it contains the cloudformation stack inside as a template and can be used to provision cfn stacks.
 
 How to run via sceptre
 1. Install python virtual environment then activate it
