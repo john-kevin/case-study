@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a stack that will handle leads from dynamo db,
+             sends it on sqs via lambda and will be consumed by another lambda which will insert in a crm. 
+             Failure with send SMS in my phone and retry the process twice, Success will send it to other sqs
+Parameters:
+  TableName:
+    Type: String
+  LambdaReaderFunctionName: 
+    Type: String  
+  LambdaParserFunctionName:
+    Type: String  
+Resources:
+  DynamoDb:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      ProvisionedThroughput:
+        ReadCapacityUnits : 1
+        WriteCapacityUnits : 1
+      AttributeDefinitions:
+        -
+          AttributeName: "leadId"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "leadId"
+          KeyType: "HASH"
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES   
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+             - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+  FirstQueue:
+    Type: AWS::SQS::Queue
+    Properties: 
+      QueueName: "FirstQueue" 
+  OtherQueue:
+    Type: AWS::SQS::Queue
+    Properties: 
+      QueueName: "OtherQueue"      
+  LambdaReader: 
+    DependsOn:
+      - FirstQueue
+      - LambdaExecutionRole
+      - DynamoDb
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        ZipFile: |
+          var QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/694639247083/FirstQueue';
+          var AWS = require('aws-sdk');
+          var sqs = new AWS.SQS({region : 'ap-southeast-2'});
+
+          exports.handler = function(event, context) {
+            var params = {
+              MessageBody: JSON.stringify(event),
+              QueueUrl: QUEUE_URL
+            };
+            sqs.sendMessage(params, function(err,data){
+              if(err) {
+                console.log('error:',"Fail Send Message" + err);
+                context.done('error', "ERROR Put SQS");  // ERROR with message
+              }else{
+                console.log('data:',data.MessageId);
+                context.done(null,'');  // SUCCESS 
+              }
+            });
+          }
+      Description: "Lambda function that will be triggered by dynamodb and will send data to sqs"
+      Handler: index.handler
+      Runtime: nodejs8.10
+      MemorySize: 128
+      FunctionName: !Ref LambdaReaderFunctionName
+      Role: !GetAtt LambdaExecutionRole.Arn  
+  LambdaTriggeredByDynamoDb:
+    DependsOn: 
+      - DynamoDb
+      - LambdaReader
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      # BatchSize: 1 #trigger one lambda per document
+      Enabled: True
+      EventSourceArn:
+        Fn::GetAtt: [ DynamoDb , StreamArn ]
+      FunctionName:  !GetAtt LambdaReader.Arn
+      StartingPosition: LATEST #always start at the tail of the stream
+  LambdaParser:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        ZipFile: |
+          var AWS = require('aws-sdk');
+          var sqs = new AWS.SQS({region : 'ap-southeast-2'});
+          var sns = new AWS.SNS();
+          var OTHER_QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/694639247083/OtherQueue';
+          var FIRST_QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/694639247083/FirstQueue';
+          var SQS_URL = '';
+          var message = '';
+
+          exports.handler = function(event, context) {
+            event.Records.forEach(record => {
+              
+              message = record.body + ' this is an alteration';
+              
+              console.log(message);
+            
+              // Assume that the rest api call was made here
+              
+              if(false){
+                SQS_URL = OTHER_QUEUE_URL;
+              }else{
+              
+                var params = {
+                  Message: "Failed to insert in crm", 
+                  Subject: "Test SNS From Lambda",
+                  TopicArn: "arn:aws:sns:ap-southeast-2:694639247083:lead-events"
+                };
+                sns.publish(params, context.done);
+                SQS_URL = FIRST_QUEUE_URL;
+              }
+              
+              var params = {
+                MessageBody: JSON.stringify(message),
+                QueueUrl: SQS_URL
+              };
+              
+              sqs.sendMessage(params, function(err,data){
+                if(err) {
+                  console.log('error:',"Fail Send Message" + err);
+                  context.done('error', "ERROR Put SQS");  // ERROR with message
+                }else{
+                  console.log('data:',data.MessageId);
+                  context.done(null,'');  // SUCCESS 
+                }
+              });
+            });
+          }
+      Description: "Lambda function that will be triggered by sqs. This will parse the data and insert to crm. A failure will trigger sns event and resend to the firstQueue"
+      Handler: index.handler
+      Runtime: nodejs8.10
+      MemorySize: 128
+      FunctionName: !Ref LambdaParserFunctionName
+      Role: !GetAtt LambdaExecutionRole.Arn
+  LambdaTriggeredBySQS:
+      DependsOn: 
+        - FirstQueue
+        - LambdaParser
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        Enabled: True
+        EventSourceArn:
+          Fn::GetAtt: [ FirstQueue , Arn ]
+        FunctionName:  !GetAtt LambdaParser.Arn
+  SNS:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: lead-crm-failure-event
+      Subscription: 
+        -
+          Endpoint: 639164840091 #subscribed my phone number to recieve sms upon failure
+          Protocol: sms
+      TopicName: lead-events

@@ -1,0 +1,62 @@
+var AWS = require('aws-sdk');
+var sqs = new AWS.SQS({region : 'ap-southeast-2'});
+var sns = new AWS.SNS();
+var OTHER_QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/694639247083/OtherQueue';
+var FIRST_QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/694639247083/FirstQueue';
+var SQS_URL = '';
+var message = '';
+var retries = '';
+
+exports.handler = function(event, context) {
+  event.Records.forEach(record => {
+    message = JSON.stringify(record);
+    var parsedJson = JSON.parse(message);
+    
+    console.log(parsedJson);
+    
+    if(typeof parsedJson.retries == 'undefined' ) { // set retry count 
+      parsedJson.retries = 1;
+    }else{
+      retries = retries + 1; //
+    }
+    
+    retries = parsedJson.retries;
+
+    message = JSON.stringify(parsedJson);
+    console.log(retries);
+
+    // Assume that the rest api call was made here
+    
+    if(false){
+      SQS_URL = OTHER_QUEUE_URL;
+    }else{
+      if(retries <= 2){
+        // console.log('will send message now');
+        // var params = {
+        //   Message: "Failed to insert in crm", 
+        //   Subject: "Test SNS From Lambda",
+        //   TopicArn: "arn:aws:sns:ap-southeast-2:694639247083:lead-events"
+        // };
+        // sns.publish(params, context.done);
+        SQS_URL = FIRST_QUEUE_URL;
+      }
+    }
+    
+
+    var params = {
+      MessageBody: JSON.stringify(parsedJson),
+      QueueUrl: SQS_URL
+    };
+        console.log(message);
+    sqs.sendMessage(params, function(err,data){
+      if(err) {
+        console.log('error:',"Fail Send Message" + err);
+        context.done('error', "ERROR Put SQS");  // ERROR with message
+      }else{
+        console.log('data:',data.MessageId);
+        context.done(null,'');  // SUCCESS 
+      }
+    });
+    
+  });
+}

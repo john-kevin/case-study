@@ -1,0 +1,7 @@
+template_path: caseStudy.yaml
+parameters:
+  TableName: lead-gen2
+  LambdaReaderFunctionName: lambdaReader
+  LambdaParserFunctionName: lambdaParser
+hooks:
+on_failure: "DELETE"
